@@ -471,6 +471,8 @@ type Table struct {
 	// If there are no borders, the column separator.
 	separator rune
 
+	useSeparator bool
+
 	// The table's data structure.
 	content TableContent
 
@@ -539,6 +541,7 @@ func NewTable() *Table {
 		Box:          NewBox(),
 		bordersColor: Styles.GraphicsColor,
 		separator:    ' ',
+		useSeparator: false,
 	}
 	t.SetContent(nil)
 	return t
@@ -602,6 +605,7 @@ func (t *Table) SetSelectedStyle(style tcell.Style) *Table {
 // Separators have the same color as borders.
 func (t *Table) SetSeparator(separator rune) *Table {
 	t.separator = separator
+	t.useSeparator = true
 	return t
 }
 
@@ -812,7 +816,7 @@ func (t *Table) CellAt(x, y int) (row, column int) {
 		}
 	}
 
-	// Saerch for the clicked column.
+	// Search for the clicked column.
 	column = -1
 	if x >= rectX {
 		columnX := rectX
@@ -820,7 +824,9 @@ func (t *Table) CellAt(x, y int) (row, column int) {
 			columnX++
 		}
 		for index, width := range t.visibleColumnWidths {
+			// TODO: check
 			columnX += width + 1
+			// columnX += width
 			if x < columnX {
 				column = t.visibleColumnIndices[index]
 				break
@@ -1032,7 +1038,9 @@ func (t *Table) Draw(screen tcell.Screen) {
 		columns = append(columns, column)
 		widths = append(widths, clampedMaxWidth)
 		expansions = append(expansions, expansion)
+		// TODO: check
 		tableWidth += clampedMaxWidth + 1
+		// tableWidth += clampedMaxWidth
 		expansionTotal += expansion
 		if t.columnsSelectable && t.clampToSelection && column == t.selectedColumn {
 			// We want selections to appear fully.
@@ -1173,7 +1181,7 @@ func (t *Table) Draw(screen tcell.Screen) {
 					break // No space for the text anymore.
 				}
 				drawBorder(columnX-1, rowY, Borders.Vertical)
-			} else if columnIndex < len(columns)-1 {
+			} else if t.useSeparator && columnIndex < len(columns)-1 {
 				// Draw separator.
 				drawBorder(columnX+columnWidth, rowY, t.separator)
 			}
@@ -1220,7 +1228,9 @@ func (t *Table) Draw(screen tcell.Screen) {
 			drawBorder(columnX-1, rowY, ch)
 		}
 
+		// TODO: check
 		columnX += columnWidth + 1
+		// columnX += columnWidth
 	}
 
 	// Draw right border.
