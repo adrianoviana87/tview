@@ -533,6 +533,8 @@ type Table struct {
 	// An optional function which gets called when the user presses Escape, Tab,
 	// or Backtab. Also when the user presses Enter if nothing is selectable.
 	done func(key tcell.Key)
+
+	cellClicked func(row, column int) bool
 }
 
 // NewTable returns a new table.
@@ -653,6 +655,11 @@ func (t *Table) Select(row, column int) *Table {
 	if t.selectionChanged != nil {
 		t.selectionChanged(row, column)
 	}
+	return t
+}
+
+func (t *Table) SetCellClickedFunc(f func(row, column int) bool) *Table {
+	t.cellClicked = f
 	return t
 }
 
@@ -825,8 +832,8 @@ func (t *Table) CellAt(x, y int) (row, column int) {
 		}
 		for index, width := range t.visibleColumnWidths {
 			// TODO: check
-			columnX += width + 1
-			// columnX += width
+			// columnX += width + 1
+			columnX += width
 			if x < columnX {
 				column = t.visibleColumnIndices[index]
 				break
@@ -1039,8 +1046,8 @@ func (t *Table) Draw(screen tcell.Screen) {
 		widths = append(widths, clampedMaxWidth)
 		expansions = append(expansions, expansion)
 		// TODO: check
-		tableWidth += clampedMaxWidth + 1
-		// tableWidth += clampedMaxWidth
+		// tableWidth += clampedMaxWidth + 1
+		tableWidth += clampedMaxWidth
 		expansionTotal += expansion
 		if t.columnsSelectable && t.clampToSelection && column == t.selectedColumn {
 			// We want selections to appear fully.
@@ -1229,8 +1236,8 @@ func (t *Table) Draw(screen tcell.Screen) {
 		}
 
 		// TODO: check
-		columnX += columnWidth + 1
-		// columnX += columnWidth
+		// columnX += columnWidth + 1
+		columnX += columnWidth
 	}
 
 	// Draw right border.
@@ -1375,6 +1382,271 @@ func (t *Table) Draw(screen tcell.Screen) {
 	t.visibleColumnIndices, t.visibleColumnWidths = columns, widths
 }
 
+func (t *Table) Down() {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	if t.rowsSelectable {
+		t.selectedRow++
+		if t.selectedRow >= rowCount {
+			if t.wrapVertically {
+				t.selectedRow = 0
+			} else {
+				t.selectedRow = rowCount - 1
+			}
+		}
+		row, column := t.selectedRow, t.selectedColumn
+		finalRow, finalColumn := rowCount-1, lastColumn
+		if t.wrapVertically {
+			finalRow = row
+			finalColumn = column
+		}
+		if !t.forward(finalRow, finalColumn) {
+			t.backwards(row, column)
+		}
+		t.clampToSelection = true
+	} else {
+		t.rowOffset++
+	}
+}
+
+func (t *Table) Home() {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	if t.rowsSelectable {
+		t.selectedRow = 0
+		t.selectedColumn = 0
+		t.forward(rowCount-1, lastColumn)
+		t.clampToSelection = true
+	} else {
+		t.trackEnd = false
+		t.rowOffset = 0
+		t.columnOffset = 0
+	}
+}
+
+func (t *Table) End() {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	if t.rowsSelectable {
+		t.selectedRow = rowCount - 1
+		t.selectedColumn = lastColumn
+		t.backwards(0, 0)
+		t.clampToSelection = true
+	} else {
+		t.trackEnd = true
+		t.columnOffset = 0
+	}
+}
+
+func (t *Table) Up() {
+	rowCount := t.getRowCount()
+	if t.rowsSelectable {
+		t.selectedRow--
+		if t.selectedRow < 0 {
+			if t.wrapVertically {
+				t.selectedRow = rowCount - 1
+			} else {
+				t.selectedRow = 0
+			}
+		}
+		row, column := t.selectedRow, t.selectedColumn
+		finalRow, finalColumn := 0, 0
+		if t.wrapVertically {
+			finalRow = row
+			finalColumn = column
+		}
+		if !t.backwards(finalRow, finalColumn) {
+			t.forward(row, column)
+		}
+		t.clampToSelection = true
+	} else {
+		t.trackEnd = false
+		t.rowOffset--
+	}
+}
+
+func(t *Table) Left() {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	if t.columnsSelectable {
+		row, column := t.selectedRow, t.selectedColumn
+		t.selectedColumn--
+		if t.selectedColumn < 0 {
+			if t.wrapHorizontally {
+				t.selectedColumn = lastColumn
+				t.selectedRow--
+				if t.selectedRow < 0 {
+					if t.wrapVertically {
+						t.selectedRow = rowCount - 1
+					} else {
+						t.selectedColumn = 0
+						t.selectedRow = 0
+					}
+				}
+			} else {
+				t.selectedColumn = 0
+			}
+		}
+		finalRow, finalColumn := row, column
+		if !t.wrapHorizontally {
+			finalColumn = 0
+		} else if !t.wrapVertically {
+			finalRow = 0
+			finalColumn = 0
+		}
+		if !t.backwards(finalRow, finalColumn) {
+			t.forward(row, column)
+		}
+		t.clampToSelection = true
+	} else {
+		t.columnOffset--
+	}
+}
+
+func (t *Table) PageDown() {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	offsetAmount := t.visibleRows - t.fixedRows
+	if offsetAmount < 0 {
+		offsetAmount = 0
+	}
+	if t.rowsSelectable {
+		row, column := t.selectedRow, t.selectedColumn
+		t.selectedRow += offsetAmount
+		if t.selectedRow >= rowCount {
+			t.selectedRow = rowCount - 1
+		}
+		finalRow, finalColumn := rowCount-1, lastColumn
+		if !t.forward(finalRow, finalColumn) {
+			t.backwards(row, column)
+		}
+		t.clampToSelection = true
+	} else {
+		t.rowOffset += offsetAmount
+	}
+}
+
+func (t *Table) PageUp() {
+	offsetAmount := t.visibleRows - t.fixedRows
+	if offsetAmount < 0 {
+		offsetAmount = 0
+	}
+	if t.rowsSelectable {
+		row, column := t.selectedRow, t.selectedColumn
+		t.selectedRow -= offsetAmount
+		if t.selectedRow < 0 {
+			t.selectedRow = 0
+		}
+		finalRow, finalColumn := 0, 0
+		if !t.backwards(finalRow, finalColumn) {
+			t.forward(row, column)
+		}
+		t.clampToSelection = true
+	} else {
+		t.trackEnd = false
+		t.rowOffset -= offsetAmount
+	}
+}
+
+func (t *Table) Right() {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	if t.columnsSelectable {
+		row, column := t.selectedRow, t.selectedColumn
+		t.selectedColumn++
+		if t.selectedColumn > lastColumn {
+			if t.wrapHorizontally {
+				t.selectedColumn = 0
+				t.selectedRow++
+				if t.selectedRow >= rowCount {
+					if t.wrapVertically {
+						t.selectedRow = 0
+					} else {
+						t.selectedColumn = lastColumn
+						t.selectedRow = rowCount - 1
+					}
+				}
+			} else {
+				t.selectedColumn = lastColumn
+			}
+		}
+		finalRow, finalColumn := row, column
+		if !t.wrapHorizontally {
+			finalColumn = lastColumn
+		} else if !t.wrapVertically {
+			finalRow = rowCount - 1
+			finalColumn = lastColumn
+		}
+		if !t.forward(finalRow, finalColumn) {
+			t.backwards(row, column)
+		}
+		t.clampToSelection = true
+	} else {
+		t.columnOffset++
+	}
+}
+
+func (t *Table) forward(finalRow, finalColumn int) bool {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	row, column := t.selectedRow, t.selectedColumn
+	for {
+		// Stop if the current selection is fine.
+		cell := t.content.GetCell(row, column)
+		if cell != nil && !cell.NotSelectable {
+			t.selectedRow, t.selectedColumn = row, column
+			return true
+		}
+
+		// If we reached the final cell, stop.
+		if row == finalRow && column == finalColumn {
+			return false
+		}
+
+		// Move forward.
+		column++
+		if column > lastColumn {
+			column = 0
+			row++
+			if row >= rowCount {
+				row = 0
+			}
+		}
+	}
+}
+
+// Move the selection backwards, don't go beyond final cell, return
+// true if a selection was found.
+func (t *Table) backwards(finalRow, finalColumn int) bool {
+	lastColumn, rowCount := t.getLastColumn(), t.getRowCount()
+	row, column := t.selectedRow, t.selectedColumn
+	for {
+		// Stop if the current selection is fine.
+		cell := t.content.GetCell(row, column)
+		if cell != nil && !cell.NotSelectable {
+			t.selectedRow, t.selectedColumn = row, column
+			return true
+		}
+
+		// If we reached the final cell, stop.
+		if row == finalRow && column == finalColumn {
+			return false
+		}
+
+		// Move backwards.
+		column--
+		if column < 0 {
+			column = lastColumn
+			row--
+			if row < 0 {
+				row = rowCount - 1
+			}
+		}
+	}
+}
+
+func (t *Table) getLastColumn() int {
+	return t.content.GetColumnCount() - 1
+}
+
+func (t *Table) getRowCount() int {
+	return t.content.GetRowCount()
+}
+
+
 // InputHandler returns the handler for this primitive.
 func (t *Table) InputHandler() func(event *tcell.EventKey, setFocus func(p Primitive)) {
 	return t.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p Primitive)) {
@@ -1392,7 +1664,6 @@ func (t *Table) InputHandler() func(event *tcell.EventKey, setFocus func(p Primi
 
 		// Movement functions.
 		previouslySelectedRow, previouslySelectedColumn := t.selectedRow, t.selectedColumn
-		lastColumn := t.content.GetColumnCount() - 1
 		rowCount := t.content.GetRowCount()
 		if rowCount == 0 {
 			return // No movement on empty tables.
@@ -1400,286 +1671,42 @@ func (t *Table) InputHandler() func(event *tcell.EventKey, setFocus func(p Primi
 		var (
 			// Move the selection forward, don't go beyond final cell, return
 			// true if a selection was found.
-			forward = func(finalRow, finalColumn int) bool {
-				row, column := t.selectedRow, t.selectedColumn
-				for {
-					// Stop if the current selection is fine.
-					cell := t.content.GetCell(row, column)
-					if cell != nil && !cell.NotSelectable {
-						t.selectedRow, t.selectedColumn = row, column
-						return true
-					}
 
-					// If we reached the final cell, stop.
-					if row == finalRow && column == finalColumn {
-						return false
-					}
 
-					// Move forward.
-					column++
-					if column > lastColumn {
-						column = 0
-						row++
-						if row >= rowCount {
-							row = 0
-						}
-					}
-				}
-			}
-
-			// Move the selection backwards, don't go beyond final cell, return
-			// true if a selection was found.
-			backwards = func(finalRow, finalColumn int) bool {
-				row, column := t.selectedRow, t.selectedColumn
-				for {
-					// Stop if the current selection is fine.
-					cell := t.content.GetCell(row, column)
-					if cell != nil && !cell.NotSelectable {
-						t.selectedRow, t.selectedColumn = row, column
-						return true
-					}
-
-					// If we reached the final cell, stop.
-					if row == finalRow && column == finalColumn {
-						return false
-					}
-
-					// Move backwards.
-					column--
-					if column < 0 {
-						column = lastColumn
-						row--
-						if row < 0 {
-							row = rowCount - 1
-						}
-					}
-				}
-			}
-
-			home = func() {
-				if t.rowsSelectable {
-					t.selectedRow = 0
-					t.selectedColumn = 0
-					forward(rowCount-1, lastColumn)
-					t.clampToSelection = true
-				} else {
-					t.trackEnd = false
-					t.rowOffset = 0
-					t.columnOffset = 0
-				}
-			}
-
-			end = func() {
-				if t.rowsSelectable {
-					t.selectedRow = rowCount - 1
-					t.selectedColumn = lastColumn
-					backwards(0, 0)
-					t.clampToSelection = true
-				} else {
-					t.trackEnd = true
-					t.columnOffset = 0
-				}
-			}
-
-			down = func() {
-				if t.rowsSelectable {
-					t.selectedRow++
-					if t.selectedRow >= rowCount {
-						if t.wrapVertically {
-							t.selectedRow = 0
-						} else {
-							t.selectedRow = rowCount - 1
-						}
-					}
-					row, column := t.selectedRow, t.selectedColumn
-					finalRow, finalColumn := rowCount-1, lastColumn
-					if t.wrapVertically {
-						finalRow = row
-						finalColumn = column
-					}
-					if !forward(finalRow, finalColumn) {
-						backwards(row, column)
-					}
-					t.clampToSelection = true
-				} else {
-					t.rowOffset++
-				}
-			}
-
-			up = func() {
-				if t.rowsSelectable {
-					t.selectedRow--
-					if t.selectedRow < 0 {
-						if t.wrapVertically {
-							t.selectedRow = rowCount - 1
-						} else {
-							t.selectedRow = 0
-						}
-					}
-					row, column := t.selectedRow, t.selectedColumn
-					finalRow, finalColumn := 0, 0
-					if t.wrapVertically {
-						finalRow = row
-						finalColumn = column
-					}
-					if !backwards(finalRow, finalColumn) {
-						forward(row, column)
-					}
-					t.clampToSelection = true
-				} else {
-					t.trackEnd = false
-					t.rowOffset--
-				}
-			}
-
-			left = func() {
-				if t.columnsSelectable {
-					row, column := t.selectedRow, t.selectedColumn
-					t.selectedColumn--
-					if t.selectedColumn < 0 {
-						if t.wrapHorizontally {
-							t.selectedColumn = lastColumn
-							t.selectedRow--
-							if t.selectedRow < 0 {
-								if t.wrapVertically {
-									t.selectedRow = rowCount - 1
-								} else {
-									t.selectedColumn = 0
-									t.selectedRow = 0
-								}
-							}
-						} else {
-							t.selectedColumn = 0
-						}
-					}
-					finalRow, finalColumn := row, column
-					if !t.wrapHorizontally {
-						finalColumn = 0
-					} else if !t.wrapVertically {
-						finalRow = 0
-						finalColumn = 0
-					}
-					if !backwards(finalRow, finalColumn) {
-						forward(row, column)
-					}
-					t.clampToSelection = true
-				} else {
-					t.columnOffset--
-				}
-			}
-
-			right = func() {
-				if t.columnsSelectable {
-					row, column := t.selectedRow, t.selectedColumn
-					t.selectedColumn++
-					if t.selectedColumn > lastColumn {
-						if t.wrapHorizontally {
-							t.selectedColumn = 0
-							t.selectedRow++
-							if t.selectedRow >= rowCount {
-								if t.wrapVertically {
-									t.selectedRow = 0
-								} else {
-									t.selectedColumn = lastColumn
-									t.selectedRow = rowCount - 1
-								}
-							}
-						} else {
-							t.selectedColumn = lastColumn
-						}
-					}
-					finalRow, finalColumn := row, column
-					if !t.wrapHorizontally {
-						finalColumn = lastColumn
-					} else if !t.wrapVertically {
-						finalRow = rowCount - 1
-						finalColumn = lastColumn
-					}
-					if !forward(finalRow, finalColumn) {
-						backwards(row, column)
-					}
-					t.clampToSelection = true
-				} else {
-					t.columnOffset++
-				}
-			}
-
-			pageDown = func() {
-				offsetAmount := t.visibleRows - t.fixedRows
-				if offsetAmount < 0 {
-					offsetAmount = 0
-				}
-				if t.rowsSelectable {
-					row, column := t.selectedRow, t.selectedColumn
-					t.selectedRow += offsetAmount
-					if t.selectedRow >= rowCount {
-						t.selectedRow = rowCount - 1
-					}
-					finalRow, finalColumn := rowCount-1, lastColumn
-					if !forward(finalRow, finalColumn) {
-						backwards(row, column)
-					}
-					t.clampToSelection = true
-				} else {
-					t.rowOffset += offsetAmount
-				}
-			}
-
-			pageUp = func() {
-				offsetAmount := t.visibleRows - t.fixedRows
-				if offsetAmount < 0 {
-					offsetAmount = 0
-				}
-				if t.rowsSelectable {
-					row, column := t.selectedRow, t.selectedColumn
-					t.selectedRow -= offsetAmount
-					if t.selectedRow < 0 {
-						t.selectedRow = 0
-					}
-					finalRow, finalColumn := 0, 0
-					if !backwards(finalRow, finalColumn) {
-						forward(row, column)
-					}
-					t.clampToSelection = true
-				} else {
-					t.trackEnd = false
-					t.rowOffset -= offsetAmount
-				}
-			}
 		)
 
 		switch key {
 		case tcell.KeyRune:
 			switch event.Rune() {
 			case 'g':
-				home()
+				t.Home()
 			case 'G':
-				end()
+				t.End()
 			case 'j':
-				down()
+				t.Down()
 			case 'k':
-				up()
+				t.Up()
 			case 'h':
-				left()
+				t.Left()
 			case 'l':
-				right()
+				t.Right()
 			}
 		case tcell.KeyHome:
-			home()
+			t.Home()
 		case tcell.KeyEnd:
-			end()
+			t.End()
 		case tcell.KeyUp:
-			up()
+			t.Up()
 		case tcell.KeyDown:
-			down()
+			t.Down()
 		case tcell.KeyLeft:
-			left()
+			t.Left()
 		case tcell.KeyRight:
-			right()
+			t.Right()
 		case tcell.KeyPgDn, tcell.KeyCtrlF:
-			pageDown()
+			t.PageDown()
 		case tcell.KeyPgUp, tcell.KeyCtrlB:
-			pageUp()
+			t.PageUp()
 		case tcell.KeyEnter:
 			if (t.rowsSelectable || t.columnsSelectable) && t.selected != nil {
 				t.selected(t.selectedRow, t.selectedColumn)
@@ -1711,8 +1738,14 @@ func (t *Table) MouseHandler() func(action MouseAction, event *tcell.EventMouse,
 			selectEvent := true
 			row, column := t.CellAt(x, y)
 			cell := t.content.GetCell(row, column)
-			if cell != nil && cell.Clicked != nil {
-				if noSelect := cell.Clicked(); noSelect {
+			if cell != nil && (cell.Clicked != nil || t.cellClicked != nil) {
+				noSelect := false
+				if cell.Clicked != nil {
+					noSelect = cell.Clicked()
+				} else {
+					noSelect = t.cellClicked(row, column)
+				}
+				if noSelect {
 					selectEvent = false
 				}
 			}
