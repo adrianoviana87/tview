@@ -94,6 +94,10 @@ func (b *Box) GetRect() (int, int, int, int) {
 	return b.x, b.y, b.width, b.height
 }
 
+func (b *Box) GetBottom() int {
+	return b.y + b.height
+}
+
 // GetInnerRect returns the position of the inner rectangle (x, y, width,
 // height), without the border and without any padding. Width and height values
 // will clamp to 0 and thus never be negative.
